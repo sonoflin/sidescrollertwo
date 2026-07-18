@@ -8,6 +8,7 @@ type GameMode = "cpu" | "online";
 type MatchConfig = {
   mode: GameMode;
   localPlayer: 0 | 1;
+  tutorial?: boolean;
   roomCode?: string;
   socket?: WebSocket;
 };
@@ -75,6 +76,7 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
     let game: import("phaser").Game | null = null;
     let disposed = false;
     let socketMessageHandler: ((event: MessageEvent) => void) | null = null;
+    let tutorialStartHandler: (() => void) | null = null;
 
     void (async () => {
       const PhaserModule = await import("phaser");
@@ -127,6 +129,7 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
       };
       type NetworkPayload = { kind: "input"; controls: ControlIntent } | { kind: "snapshot"; snapshot: NetworkSnapshot };
       let receiveNetworkPayload: ((payload: NetworkPayload) => void) | null = null;
+      let beginTutorialRun: (() => void) | null = null;
 
       class ArenaScene extends Phaser.Scene {
         private pilots: Pilot[] = [];
@@ -156,6 +159,7 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
         private shotSerial = 0;
         private nextNetworkFrame = 0;
         private matchWinner: number | null = null;
+        private tutorialLocked = config.tutorial === true;
         private readonly replica = config.mode === "online" && config.localPlayer === 1;
 
         constructor() {
@@ -200,6 +204,7 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
           this.configureCameras();
           this.startRound();
           receiveNetworkPayload = (payload) => this.receiveNetwork(payload);
+          beginTutorialRun = () => this.beginTutorial();
         }
 
         private makeTextures() {
@@ -312,16 +317,16 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
 
         private createPilots() {
           const createPilot = (id: number, key: string): Pilot => {
-            const sprite = this.physics.add.sprite(STARTS[id], 670, key).setDisplaySize(108, 108).setDepth(5);
+            const sprite = this.physics.add.sprite(STARTS[id], 650, key).setDisplaySize(152, 152).setDepth(5);
             const body = sprite.body as ArcBody;
-            body.setSize(250, 590).setOffset(225, 74);
+            body.setSize(310, 680).setOffset(355, 185);
             body.setMaxVelocity(420, 900);
             body.setDragX(1200);
             body.setCollideWorldBounds(true);
             sprite.setFlipX(id === 1);
             sprite.setData("pilotId", id);
             const color = id === 0 ? 0x16e1ff : 0xff2f9d;
-            const shieldFx = this.add.ellipse(sprite.x, sprite.y, 118, 132, color, 0.07).setStrokeStyle(5, color, 0.72).setDepth(4).setVisible(false);
+            const shieldFx = this.add.ellipse(sprite.x, sprite.y, 170, 180, color, 0.07).setStrokeStyle(5, color, 0.72).setDepth(4).setVisible(false);
             return {
               id, sprite, shieldFx, hp: 100, maxHp: 100, shield: 100, level: 1, exp: 0, weapon: 0,
               nextShot: 0, nextDash: 0, invulnerableUntil: 0, cloakUntil: 0, overdriveUntil: 0,
@@ -335,7 +340,7 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
           const focusPilot = this.pilots[config.localPlayer];
           this.cameras.main.setViewport(0, 0, 1600, 900).setBounds(0, 0, WORLD_WIDTH, 900).setBackgroundColor(0x050817);
           this.cameras.main.startFollow(focusPilot.sprite, true, 0.1, 0.1, 0, 34);
-          this.cameras.main.setZoom(1.04);
+          this.cameras.main.setZoom(1.10);
         }
 
         private startRound() {
@@ -364,7 +369,7 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
             pilot.overdriveUntil = 0;
             pilot.invulnerableUntil = this.time.now + 1700;
             pilot.respawning = false;
-            pilot.sprite.enableBody(true, STARTS[id], 670, true, true);
+            pilot.sprite.enableBody(true, STARTS[id], 650, true, true);
             pilot.sprite.setVelocity(0, 0).setAlpha(1).setTint(0xffffff);
             pilot.sprite.setFlipX(id === 1);
             pilot.facing = id === 0 ? 1 : -1;
@@ -383,11 +388,23 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
           this.roundStartedAt = this.time.now + 1200;
           if (this.replica) {
             this.physics.pause();
+          } else if (this.tutorialLocked) {
+            this.physics.pause();
+            this.announcement = "TRAINING LINK READY // REVIEW THE FIELD BRIEF";
           } else {
             this.say(`ROUND ${this.roundNumber} // ENGAGE`, 1500);
             this.time.delayedCall(1200, () => { this.roundActive = true; });
           }
           this.emitHud(true);
+        }
+
+        private beginTutorial() {
+          if (!this.tutorialLocked) return;
+          this.tutorialLocked = false;
+          this.physics.resume();
+          this.roundStartedAt = this.time.now + 900;
+          this.say("TRAINING LIVE // MOVE RIGHT AND HUNT", 1700);
+          this.time.delayedCall(900, () => { this.roundActive = true; });
         }
 
         private spawnMinion(x: number, tier: number, serialOverride?: number) {
@@ -689,7 +706,7 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
             pilot.overdriveUntil = 0;
             pilot.invulnerableUntil = this.time.now + 1600;
             pilot.respawning = false;
-            pilot.sprite.enableBody(true, STARTS[pilot.id], 670, true, true).setAlpha(1);
+            pilot.sprite.enableBody(true, STARTS[pilot.id], 650, true, true).setAlpha(1);
           });
         }
 
@@ -933,7 +950,7 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
         }
 
         private buildHud(): HudState {
-          const elapsed = Math.max(0, (this.time.now - this.roundStartedAt) / 1000);
+          const elapsed = this.tutorialLocked ? 0 : Math.max(0, (this.time.now - this.roundStartedAt) / 1000);
           const seconds = Math.max(0, Math.ceil(90 - elapsed));
           const pilots = this.pilots.map((pilot) => {
             const statuses: string[] = [];
@@ -949,7 +966,11 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
           }) as [PilotHud, PilotHud];
           return {
             pilots, scores: [...this.score] as [number, number], seconds,
-            phase: elapsed < 45 ? `COLLAPSE IN ${Math.max(0, Math.ceil(45 - elapsed))}` : "COLLAPSE ACTIVE",
+            phase: this.tutorialLocked
+              ? "TRAINING PAUSED"
+              : elapsed < 45
+                ? `COLLAPSE IN ${Math.max(0, Math.ceil(45 - elapsed))}`
+                : "COLLAPSE ACTIVE",
             announcement: this.announcement, coreOwner: this.coreOwner, matchWinner: this.matchWinner,
           };
         }
@@ -970,6 +991,10 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
         };
         config.socket.addEventListener("message", socketMessageHandler);
       }
+      if (config.tutorial) {
+        tutorialStartHandler = () => beginTutorialRun?.();
+        window.addEventListener("rift:tutorial-start", tutorialStartHandler);
+      }
 
       if (disposed || !hostRef.current) return;
       game = new Phaser.Game({
@@ -989,6 +1014,7 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
     return () => {
       disposed = true;
       if (config.socket && socketMessageHandler) config.socket.removeEventListener("message", socketMessageHandler);
+      if (tutorialStartHandler) window.removeEventListener("rift:tutorial-start", tutorialStartHandler);
       game?.destroy(true);
     };
   }, [config, onDisconnect, onHud, session]);
@@ -1034,9 +1060,114 @@ function PilotHudPanel({ pilot, id }: { pilot: PilotHud; id: 0 | 1 }) {
 
 type LobbyState = { status: "idle" | "connecting" | "waiting" | "error"; code?: string; message?: string };
 
-function ModeSelect({ lobby, onSolo, onCreate, onJoin }: {
+const TRAINING_STEPS = [
+  {
+    tag: "MOVEMENT // 01",
+    title: "PUSH TOWARD CENTER",
+    body: "You begin at the far edge of the world. Hold D to advance, A to retreat, and tap W to jump onto raised routes. Your core-proximity readout climbs as you close on center.",
+    keys: ["A", "D", "W"],
+    tip: "Your camera follows only your pilot. Your rival has their own view from the opposite side.",
+  },
+  {
+    tag: "COMBAT // 02",
+    title: "HUNT THE MINIONS",
+    body: "Hold F to fire your blaster. Defeated minions award EXP and may drop tech. Enemies become tougher toward center, but their EXP and drop chances rise sharply.",
+    keys: ["F"],
+    tip: "Reach 60 EXP for level 2. Every level increases maximum health and blaster damage.",
+  },
+  {
+    tag: "DEFENSE // 03",
+    title: "SHIELD. DASH. SURVIVE.",
+    body: "Hold G to project your shield and reduce incoming damage. Shield energy recharges when released. Tap H to burst through danger with a short invulnerable dash.",
+    keys: ["G", "H"],
+    tip: "Shielding slows you and prevents firing. Dash has a short cooldown—use it deliberately.",
+  },
+  {
+    tag: "POWER // 04",
+    title: "BUILD THIS RUN",
+    body: "Glowing drops grant weapon cores, shield charge, repair, cloak, or overdrive. Levels and tech last only for the current run. A minion or collapse defeat sends you home and wipes them all.",
+    keys: [],
+    tip: "GOLD: weapon  •  CYAN: shield  •  GREEN: repair  •  VIOLET: cloak  •  PINK: overdrive",
+  },
+  {
+    tag: "OBJECTIVE // 05",
+    title: "CLAIM. CONVERGE. BREAK.",
+    body: "Touch the relay core first for EXP, repair, a full shield, and nine seconds of overdrive. At 45 seconds the arena collapses inward. Bring your rival to zero twice to win the match.",
+    keys: [],
+    tip: "Do not over-farm. First contact is powerful, and the safe arena is always shrinking.",
+  },
+] as const;
+
+type TrainingSession = { step: number; launchesRun: boolean };
+
+function TrainingOverlay({ session, onNext, onClose }: {
+  session: TrainingSession;
+  onNext: () => void;
+  onClose: () => void;
+}) {
+  const step = TRAINING_STEPS[session.step];
+  const finalStep = session.step === TRAINING_STEPS.length - 1;
+  return (
+    <div className="training-overlay" role="dialog" aria-modal="true" aria-labelledby="training-title">
+      <div className="training-card">
+        <div className="training-art" aria-hidden="true">
+          <Image src="/assets/characters/astra.png" alt="" width={430} height={430} unoptimized priority />
+          <span>{String(session.step + 1).padStart(2, "0")}</span>
+        </div>
+        <div className="training-copy">
+          <div className="training-progress">
+            {TRAINING_STEPS.map((item, index) => <i key={item.tag} className={index <= session.step ? "active" : ""} />)}
+          </div>
+          <span className="training-tag">{step.tag}</span>
+          <h2 id="training-title">{step.title}</h2>
+          <p>{step.body}</p>
+          {step.keys.length > 0 && <div className="training-keys">{step.keys.map((key) => <kbd key={key}>{key}</kbd>)}</div>}
+          <div className="training-tip"><b>FIELD NOTE</b><span>{step.tip}</span></div>
+          <div className="training-actions">
+            <button className="training-next" onClick={onNext}>{finalStep ? (session.launchesRun ? "START TRAINING RUN" : "RETURN TO MATCH") : "NEXT BRIEF"}<b>→</b></button>
+            <button className="training-close" onClick={onClose}>{session.launchesRun ? "SKIP BRIEF" : "CLOSE"}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LiveCoach({ hud }: { hud: HudState }) {
+  const pilot = hud.pilots[0];
+  let label = "MOVE";
+  let message = "Hold D to advance toward the relay. Tap W to jump.";
+  let keys = ["D", "W"];
+  if (pilot.progress >= 8 && pilot.level === 1) {
+    label = "HUNT";
+    message = `Hold F to blast minions. ${Math.max(0, 60 - pilot.exp)} EXP to level 2.`;
+    keys = ["F"];
+  } else if (pilot.level > 1 && pilot.progress < 72) {
+    label = "BUILD";
+    message = "Collect glowing tech. Hold G to shield; tap H to dash.";
+    keys = ["G", "H"];
+  } else if (pilot.progress >= 72 && hud.coreOwner === null) {
+    label = "CONVERGE";
+    message = "The relay is close. Reach it first to trigger overdrive.";
+    keys = ["D"];
+  } else if (hud.coreOwner !== null) {
+    label = "BREAK";
+    message = "Find Vanta and bring their health to zero. Two rounds wins.";
+    keys = ["F", "G", "H"];
+  }
+  return (
+    <div className="live-coach">
+      <span>LIVE COACH // {label}</span>
+      <p>{message}</p>
+      <div>{keys.map((key) => <kbd key={key}>{key}</kbd>)}</div>
+    </div>
+  );
+}
+
+function ModeSelect({ lobby, onSolo, onLearn, onCreate, onJoin }: {
   lobby: LobbyState;
   onSolo: () => void;
+  onLearn: () => void;
   onCreate: () => void;
   onJoin: (code: string) => void;
 }) {
@@ -1056,6 +1187,10 @@ function ModeSelect({ lobby, onSolo, onCreate, onJoin }: {
 
   return (
     <div className="mode-select">
+      <div className="mode-pilots" aria-hidden="true">
+        <Image className="mode-pilot astra" src="/assets/characters/astra.png" alt="" width={720} height={720} unoptimized priority />
+        <Image className="mode-pilot vanta" src="/assets/characters/vanta.png" alt="" width={720} height={720} unoptimized priority />
+      </div>
       <div className="mode-copy">
         <span className="eyebrow">ONLINE COMBAT PROTOCOL // BUILD 01</span>
         <h1>RIFTBOUND<br /><em>ARENA</em></h1>
@@ -1069,9 +1204,10 @@ function ModeSelect({ lobby, onSolo, onCreate, onJoin }: {
           <input value={joinCode} onChange={(event) => setJoinCode(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5))} placeholder="ROOM CODE" aria-label="Room code" />
           <button onClick={() => joinCode.length === 5 && onJoin(joinCode)} disabled={joinCode.length !== 5 || lobby.status === "connecting"}>JOIN <b>↗</b></button>
         </div>
-        <button className="secondary-action" onClick={onSolo}>
-          <span>02</span><b>SOLO PRACTICE</b><small>Fight the synth pilot instantly</small>
+        <button className="secondary-action learn-action" onClick={onLearn}>
+          <span>02</span><b>LEARN TO PLAY</b><small>Five-step field brief + guided run</small>
         </button>
+        <button className="practice-action" onClick={onSolo}>ALREADY BRIEFED? <b>START SOLO PRACTICE →</b></button>
         {lobby.status === "connecting" && <p className="lobby-message">CONNECTING TO RELAY…</p>}
         {lobby.status === "error" && <p className="lobby-error">{lobby.message}</p>}
       </div>
@@ -1085,6 +1221,8 @@ export default function ArenaGame() {
   const [session, setSession] = useState(0);
   const [hud, setHud] = useState<HudState>(INITIAL_HUD);
   const [lobby, setLobby] = useState<LobbyState>({ status: "idle" });
+  const [training, setTraining] = useState<TrainingSession | null>(null);
+  const [liveTraining, setLiveTraining] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const handleHud = useCallback((next: HudState) => setHud(next), []);
 
@@ -1093,12 +1231,14 @@ export default function ArenaGame() {
     socketRef.current = null;
   }, []);
 
-  const startSolo = () => {
+  const startSolo = (tutorial = false) => {
     closeSocket();
     setHud(INITIAL_HUD);
     setSession((value) => value + 1);
-    setConfig({ mode: "cpu", localPlayer: 0 });
+    setConfig({ mode: "cpu", localPlayer: 0, tutorial });
     setLobby({ status: "idle" });
+    setLiveTraining(false);
+    setTraining(tutorial ? { step: 0, launchesRun: true } : null);
   };
 
   const rematch = () => {
@@ -1111,6 +1251,8 @@ export default function ArenaGame() {
     setConfig(null);
     setHud(INITIAL_HUD);
     setLobby({ status: "idle" });
+    setTraining(null);
+    setLiveTraining(false);
   }, [closeSocket]);
 
   const handleDisconnect = useCallback(() => {
@@ -1118,6 +1260,8 @@ export default function ArenaGame() {
     setConfig(null);
     setHud(INITIAL_HUD);
     setLobby({ status: "error", message: "Your rival left the room. Create a new room to run it back." });
+    setTraining(null);
+    setLiveTraining(false);
   }, [closeSocket]);
 
   const connectOnline = (action: "create" | "join", code?: string) => {
@@ -1139,6 +1283,8 @@ export default function ArenaGame() {
         setSession((value) => value + 1);
         setConfig({ mode: "online", localPlayer: message.playerId, roomCode: message.code, socket });
         setLobby({ status: "idle" });
+        setTraining(null);
+        setLiveTraining(false);
       }
       if (message.type === "error") setLobby({ status: "error", message: message.message });
     });
@@ -1156,16 +1302,44 @@ export default function ArenaGame() {
   const localId = config?.localPlayer ?? 0;
   const rivalId = (localId === 0 ? 1 : 0) as 0 | 1;
 
+  const signalTutorialStart = () => {
+    window.dispatchEvent(new Event("rift:tutorial-start"));
+    window.setTimeout(() => window.dispatchEvent(new Event("rift:tutorial-start")), 350);
+  };
+
+  const advanceTraining = () => {
+    if (!training) return;
+    if (training.step < TRAINING_STEPS.length - 1) {
+      setTraining({ ...training, step: training.step + 1 });
+      return;
+    }
+    const launchesRun = training.launchesRun;
+    setTraining(null);
+    if (launchesRun) {
+      setLiveTraining(true);
+      signalTutorialStart();
+    }
+  };
+
+  const closeTraining = () => {
+    const launchesRun = training?.launchesRun;
+    setTraining(null);
+    if (launchesRun) {
+      setLiveTraining(true);
+      signalTutorialStart();
+    }
+  };
+
   return (
     <main className="arena-page">
       <header className="topbar">
         <a className="brand" href="#top" aria-label="Riftbound Arena home"><i>R</i><span>RIFTBOUND<small>ARENA</small></span></a>
         <div className="match-format"><span>{config?.mode === "online" ? `ROOM ${config.roomCode}` : "ONLINE PROTOCOL"}</span><b>BEST OF 3</b></div>
-        <div className="signal"><i /> SYSTEM ONLINE <span>v0.1</span></div>
+        <div className="signal"><i /> SYSTEM ONLINE <span>v0.2</span></div>
       </header>
 
       <section className="arena-shell" id="top">
-        {!config && <ModeSelect lobby={lobby} onSolo={startSolo} onCreate={() => connectOnline("create")} onJoin={(code) => connectOnline("join", code)} />}
+        {!config && <ModeSelect lobby={lobby} onSolo={() => startSolo(false)} onLearn={() => startSolo(true)} onCreate={() => connectOnline("create")} onJoin={(code) => connectOnline("join", code)} />}
         {config && (
           <>
             <GameSurface key={`${config.mode}-${config.localPlayer}-${session}`} config={config} session={session} onHud={handleHud} onDisconnect={handleDisconnect} />
@@ -1176,7 +1350,9 @@ export default function ArenaGame() {
               <div className="hud-side rival-hud"><PilotHudPanel pilot={hud.pilots[rivalId]} id={rivalId} /><ScorePips wins={hud.scores[rivalId]} side={rivalId} /></div>
             </div>
             <div className="match-phase"><span>{config.mode === "online" ? `YOU ARE ${PILOTS[localId].name}` : "SOLO PRACTICE"}</span><i /><b>{hud.phase}</b><i /><span>CORE {hud.pilots[localId].progress}%</span></div>
+            {liveTraining && config.tutorial && <LiveCoach hud={hud} />}
             {hud.announcement && <div className="announcement"><span>{hud.announcement}</span></div>}
+            <button className="help-match" onClick={() => setTraining({ step: 0, launchesRun: false })}>? // HOW TO PLAY</button>
             <button className="exit-match" onClick={leaveMatch} aria-label="Exit match">ESC // EXIT</button>
             {hud.matchWinner !== null && (
               <div className="match-over">
@@ -1188,6 +1364,7 @@ export default function ArenaGame() {
                 <button className="text-button" onClick={leaveMatch}>CHANGE PROTOCOL</button>
               </div>
             )}
+            {training && <TrainingOverlay session={training} onNext={advanceTraining} onClose={closeTraining} />}
           </>
         )}
       </section>

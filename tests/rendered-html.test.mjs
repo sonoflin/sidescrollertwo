@@ -22,6 +22,7 @@ test("server-renders the Riftbound lobby", async () => {
   const html = await response.text();
   assert.match(html, /Riftbound Arena/);
   assert.match(html, /CREATE ONLINE ROOM/);
+  assert.match(html, /LEARN TO PLAY/);
   assert.match(html, /SOLO PRACTICE/);
   assert.match(html, /BEST OF 3/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/);
@@ -39,5 +40,7 @@ test("ships editable pilot sources and online relay", async () => {
   const source = await readFile(new URL("app/game/ArenaGame.tsx", root), "utf8");
   assert.match(source, /NEXT_PUBLIC_RELAY_URL/);
   assert.match(source, /CREATE ONLINE ROOM/);
+  assert.match(source, /TRAINING_STEPS/);
+  assert.match(source, /TRAINING PAUSED/);
   assert.match(source, /COLLAPSE ACTIVE/);
 });
