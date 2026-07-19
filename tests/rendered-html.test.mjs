@@ -49,6 +49,8 @@ test("ships editable pilot sources and online relay", async () => {
   assert.match(source, /COLLAPSE ACTIVE/);
   assert.match(source, /PILOT_ANIMATION_CLIPS/);
   assert.match(source, /astra-animated/);
+  assert.match(source, /JustDown\(this\.keys\.f\)/);
+  assert.match(source, /data-local-shots-fired/);
 
   const expectedClips = ["idle", "run", "jump", "fire", "shield", "dash", "hit", "defeat"];
   for (const pilot of ["astra", "vanta"]) {

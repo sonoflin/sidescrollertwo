@@ -69,6 +69,8 @@ button { color: inherit; }
   border-bottom: 1px solid #242d47;
 }
 .game-surface, .game-surface canvas { width: 100% !important; height: 100% !important; }
+.game-surface:focus { outline: none; }
+.game-surface:focus-visible { box-shadow: inset 0 0 0 2px rgba(22, 225, 255, .5); }
 .game-surface canvas { display: block; object-fit: cover; }
 .scanlines {
   position: absolute; inset: 0; pointer-events: none; z-index: 8; opacity: .11;

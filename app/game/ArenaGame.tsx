@@ -90,6 +90,14 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
     let disposed = false;
     let socketMessageHandler: ((event: MessageEvent) => void) | null = null;
     let tutorialStartHandler: (() => void) | null = null;
+    let fireInputHandler: (() => void) | null = null;
+    let directFireInput: (() => void) | null = null;
+    let queuedFireInput = false;
+    fireInputHandler = () => {
+      queuedFireInput = true;
+      directFireInput?.();
+    };
+    window.addEventListener("rift:fire", fireInputHandler);
 
     void (async () => {
       const PhaserModule = await import("phaser");
@@ -172,6 +180,8 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
         private minionSerial = 0;
         private pickupSerial = 0;
         private shotSerial = 0;
+        private playerShotCount = 0;
+        private localShotCount = 0;
         private nextNetworkFrame = 0;
         private matchWinner: number | null = null;
         private tutorialLocked = config.tutorial === true;
@@ -221,6 +231,12 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
           this.startRound();
           receiveNetworkPayload = (payload) => this.receiveNetwork(payload);
           beginTutorialRun = () => this.beginTutorial();
+          directFireInput = () => {
+            if (this.replica || !this.roundActive) return;
+            const pilot = this.pilots[0];
+            if (!pilot.sprite.active || pilot.respawning || pilot.shieldFx.visible || this.time.now <= pilot.nextShot) return;
+            this.firePilotShot(pilot, this.time.now);
+          };
         }
 
         private makeTextures() {
@@ -390,6 +406,10 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
           this.minionSerial = 0;
           this.pickupSerial = 0;
           this.shotSerial = 0;
+          this.playerShotCount = 0;
+          this.localShotCount = 0;
+          hostRef.current?.setAttribute("data-shots-fired", "0");
+          hostRef.current?.setAttribute("data-local-shots-fired", "0");
           this.matchWinner = null;
 
           this.pilots.forEach((pilot, id) => {
@@ -429,7 +449,7 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
             this.announcement = "TRAINING LINK READY // REVIEW THE FIELD BRIEF";
           } else {
             this.say(`ROUND ${this.roundNumber} // ENGAGE`, 1500);
-            this.time.delayedCall(1200, () => { this.roundActive = true; });
+            this.roundActive = true;
           }
           this.emitHud(true);
         }
@@ -440,7 +460,7 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
           this.physics.resume();
           this.roundStartedAt = this.time.now + 900;
           this.say("TRAINING LIVE // MOVE RIGHT AND HUNT", 1700);
-          this.time.delayedCall(900, () => { this.roundActive = true; });
+          this.roundActive = true;
         }
 
         private spawnMinion(x: number, tier: number, serialOverride?: number) {
@@ -473,6 +493,7 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
         update(time: number, delta: number) {
           this.core.rotation += delta * 0.0015;
           this.coreHalo.setScale(1 + Math.sin(time * 0.003) * 0.12);
+          hostRef.current?.setAttribute("data-round-active", String(this.roundActive));
 
           if (this.replica) {
             if (time > this.nextNetworkFrame) {
@@ -507,18 +528,22 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
 
         private readHumanControls(id: number) {
           if (id === 0) {
+            const fireTapped = Phaser.Input.Keyboard.JustDown(this.keys.f);
+            const queuedFire = queuedFireInput;
+            queuedFireInput = false;
             return {
               move: (this.keys.d.isDown ? 1 : 0) - (this.keys.a.isDown ? 1 : 0),
               jump: Phaser.Input.Keyboard.JustDown(this.keys.w),
-              fire: this.keys.f.isDown,
+              fire: this.keys.f.isDown || fireTapped || queuedFire,
               shield: this.keys.g.isDown,
               dash: Phaser.Input.Keyboard.JustDown(this.keys.h),
             };
           }
+          const fireTapped = Phaser.Input.Keyboard.JustDown(this.keys.k);
           return {
             move: (this.keys.right.isDown ? 1 : 0) - (this.keys.left.isDown ? 1 : 0),
             jump: Phaser.Input.Keyboard.JustDown(this.keys.up),
-            fire: this.keys.k.isDown,
+            fire: this.keys.k.isDown || fireTapped,
             shield: this.keys.l.isDown,
             dash: Phaser.Input.Keyboard.JustDown(this.keys.semi),
           };
@@ -612,11 +637,22 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
         private firePilotShot(pilot: Pilot, time: number) {
           const overdrive = pilot.overdriveUntil > time;
           pilot.nextShot = time + (overdrive ? 125 : Math.max(260, 420 - pilot.weapon * 35));
-          const shot = this.physics.add.sprite(pilot.sprite.x + pilot.facing * 48, pilot.sprite.y - 6, `player-shot-${pilot.id}`)
-            .setDisplaySize(24 + pilot.weapon * 3, 24 + pilot.weapon * 3).setDepth(6);
+          const muzzleX = pilot.sprite.x + pilot.facing * 66;
+          const muzzleY = pilot.sprite.y - 16;
+          const shot = this.physics.add.sprite(muzzleX, muzzleY, `player-shot-${pilot.id}`)
+            .setDisplaySize(36 + pilot.weapon * 4, 15 + pilot.weapon * 2).setDepth(6).setBlendMode(Phaser.BlendModes.ADD);
           shot.setVelocityX(pilot.facing * (560 + pilot.weapon * 25));
           shot.setData({ owner: pilot.id, damage: 13 + (pilot.level - 1) * 4 + pilot.weapon * 4, born: time, serial: this.shotSerial++ });
           this.shots.add(shot);
+          this.playerShotCount += 1;
+          hostRef.current?.setAttribute("data-shots-fired", String(this.playerShotCount));
+          if (pilot.id === 0) {
+            this.localShotCount += 1;
+            hostRef.current?.setAttribute("data-local-shots-fired", String(this.localShotCount));
+          }
+          const color = pilot.id === 0 ? 0x73efff : 0xff74be;
+          const flash = this.add.ellipse(muzzleX, muzzleY, 34, 18, color, 0.92).setDepth(7).setBlendMode(Phaser.BlendModes.ADD);
+          this.tweens.add({ targets: flash, alpha: 0, scaleX: 1.8, scaleY: 0.35, duration: 95, onComplete: () => flash.destroy() });
           this.playPilotAnimation(pilot, "fire", overdrive ? 110 : 190, true);
         }
 
@@ -1082,11 +1118,28 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
       disposed = true;
       if (config.socket && socketMessageHandler) config.socket.removeEventListener("message", socketMessageHandler);
       if (tutorialStartHandler) window.removeEventListener("rift:tutorial-start", tutorialStartHandler);
+      if (fireInputHandler) window.removeEventListener("rift:fire", fireInputHandler);
+      directFireInput = null;
       game?.destroy(true);
     };
   }, [config, onDisconnect, onHud, session]);
 
-  return <div ref={hostRef} className="game-surface" aria-label="Riftbound Arena game canvas" />;
+  return (
+    <div
+      ref={hostRef}
+      className="game-surface"
+      aria-label="Riftbound Arena game canvas"
+      data-shots-fired="0"
+      data-local-shots-fired="0"
+      tabIndex={0}
+      onPointerDown={(event) => event.currentTarget.focus()}
+      onKeyDown={(event) => {
+        if (event.code !== "KeyF") return;
+        event.preventDefault();
+        window.dispatchEvent(new Event("rift:fire"));
+      }}
+    />
+  );
 }
 
 function ScorePips({ wins, side }: { wins: number; side: 0 | 1 }) {
@@ -1138,7 +1191,7 @@ const TRAINING_STEPS = [
   {
     tag: "COMBAT // 02",
     title: "HUNT THE MINIONS",
-    body: "Hold F to fire your blaster. Defeated minions award EXP and may drop tech. Enemies become tougher toward center, but their EXP and drop chances rise sharply.",
+    body: "Tap or hold F to fire your blaster. Defeated minions award EXP and may drop tech. Enemies become tougher toward center, but their EXP and drop chances rise sharply.",
     keys: ["F"],
     tip: "Reach 60 EXP for level 2. Every level increases maximum health and blaster damage.",
   },
