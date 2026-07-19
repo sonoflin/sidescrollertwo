@@ -34,6 +34,10 @@ test("ships editable pilot sources and online relay", async () => {
     access(new URL("public/assets/characters/vanta.blend", root)),
     access(new URL("public/assets/characters/astra.glb", root)),
     access(new URL("public/assets/characters/vanta.glb", root)),
+    access(new URL("public/assets/characters/astra-spritesheet.png", root)),
+    access(new URL("public/assets/characters/vanta-spritesheet.png", root)),
+    access(new URL("public/assets/characters/astra-animations.json", root)),
+    access(new URL("public/assets/characters/vanta-animations.json", root)),
     access(new URL("public/og.png", root)),
     access(new URL("server/relay.mjs", root)),
   ]);
@@ -43,4 +47,14 @@ test("ships editable pilot sources and online relay", async () => {
   assert.match(source, /TRAINING_STEPS/);
   assert.match(source, /TRAINING PAUSED/);
   assert.match(source, /COLLAPSE ACTIVE/);
+  assert.match(source, /PILOT_ANIMATION_CLIPS/);
+  assert.match(source, /astra-animated/);
+
+  const expectedClips = ["idle", "run", "jump", "fire", "shield", "dash", "hit", "defeat"];
+  for (const pilot of ["astra", "vanta"]) {
+    const manifest = JSON.parse(await readFile(new URL(`public/assets/characters/${pilot}-animations.json`, root), "utf8"));
+    assert.deepEqual(Object.keys(manifest.clips), expectedClips);
+    assert.equal(manifest.frameWidth, 256);
+    assert.equal(manifest.frameHeight, 256);
+  }
 });

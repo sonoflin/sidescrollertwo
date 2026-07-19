@@ -62,6 +62,19 @@ const PILOTS = [
   { name: "VANTA", color: "#ff2f9d", image: "/assets/characters/vanta.png" },
 ] as const;
 
+const PILOT_ANIMATION_CLIPS = {
+  idle: { start: 0, end: 7, frameRate: 8, repeat: -1 },
+  run: { start: 8, end: 15, frameRate: 16, repeat: -1 },
+  jump: { start: 16, end: 23, frameRate: 14, repeat: 0 },
+  fire: { start: 24, end: 31, frameRate: 18, repeat: 0 },
+  shield: { start: 32, end: 39, frameRate: 12, repeat: -1 },
+  dash: { start: 40, end: 47, frameRate: 20, repeat: 0 },
+  hit: { start: 48, end: 55, frameRate: 18, repeat: 0 },
+  defeat: { start: 56, end: 63, frameRate: 12, repeat: 0 },
+} as const;
+
+type PilotAnimationName = keyof typeof PILOT_ANIMATION_CLIPS;
+
 type GameSurfaceProps = {
   config: MatchConfig;
   session: number;
@@ -104,6 +117,8 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
         lastHazardHit: number;
         facing: number;
         respawning: boolean;
+        animationState: PilotAnimationName;
+        animationLockUntil: number;
       };
 
       const WORLD_WIDTH = 6400;
@@ -117,7 +132,7 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
       type NetPilot = {
         x: number; y: number; vx: number; vy: number; flip: boolean; active: boolean;
         hp: number; maxHp: number; shield: number; level: number; exp: number; weapon: number;
-        cloakUntil: number; overdriveUntil: number; facing: number; respawning: boolean;
+        cloakUntil: number; overdriveUntil: number; facing: number; respawning: boolean; animation: PilotAnimationName;
       };
       type NetMinion = { serial: number; x: number; y: number; flip: boolean; hp: number; tier: number; kind: string };
       type NetPickup = { serial: number; x: number; y: number; kind: string };
@@ -167,14 +182,15 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
         }
 
         preload() {
-          this.load.image("astra", "/assets/characters/astra.png");
-          this.load.image("vanta", "/assets/characters/vanta.png");
+          this.load.spritesheet("astra-animated", "/assets/characters/astra-spritesheet.png", { frameWidth: 256, frameHeight: 256 });
+          this.load.spritesheet("vanta-animated", "/assets/characters/vanta-spritesheet.png", { frameWidth: 256, frameHeight: 256 });
         }
 
         create() {
           this.physics.world.setBounds(0, 0, WORLD_WIDTH, 900);
           this.makeTextures();
           this.buildWorld();
+          this.createPilotAnimations();
           this.createPilots();
 
           this.shots = this.physics.add.group({ allowGravity: false });
@@ -315,22 +331,40 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
           this.rightStorm = this.add.rectangle(WORLD_WIDTH, 450, 1, 900, 0xff2c65, 0.14).setOrigin(1, 0.5).setDepth(9);
         }
 
+        private createPilotAnimations() {
+          (["astra", "vanta"] as const).forEach((pilotKey) => {
+            (Object.entries(PILOT_ANIMATION_CLIPS) as [PilotAnimationName, (typeof PILOT_ANIMATION_CLIPS)[PilotAnimationName]][])
+              .forEach(([clip, spec]) => {
+                const key = `${pilotKey}-${clip}`;
+                if (this.anims.exists(key)) return;
+                this.anims.create({
+                  key,
+                  frames: this.anims.generateFrameNumbers(`${pilotKey}-animated`, { start: spec.start, end: spec.end }),
+                  frameRate: spec.frameRate,
+                  repeat: spec.repeat,
+                });
+              });
+          });
+        }
+
         private createPilots() {
-          const createPilot = (id: number, key: string): Pilot => {
-            const sprite = this.physics.add.sprite(STARTS[id], 650, key).setDisplaySize(152, 152).setDepth(5);
+          const createPilot = (id: number, key: "astra" | "vanta"): Pilot => {
+            const sprite = this.physics.add.sprite(STARTS[id], 650, `${key}-animated`).setDisplaySize(152, 152).setDepth(5);
             const body = sprite.body as ArcBody;
-            body.setSize(310, 680).setOffset(355, 185);
+            body.setSize(78, 170).setOffset(89, 46);
             body.setMaxVelocity(420, 900);
             body.setDragX(1200);
             body.setCollideWorldBounds(true);
             sprite.setFlipX(id === 1);
             sprite.setData("pilotId", id);
+            sprite.play(`${key}-idle`);
             const color = id === 0 ? 0x16e1ff : 0xff2f9d;
             const shieldFx = this.add.ellipse(sprite.x, sprite.y, 170, 180, color, 0.07).setStrokeStyle(5, color, 0.72).setDepth(4).setVisible(false);
             return {
               id, sprite, shieldFx, hp: 100, maxHp: 100, shield: 100, level: 1, exp: 0, weapon: 0,
               nextShot: 0, nextDash: 0, invulnerableUntil: 0, cloakUntil: 0, overdriveUntil: 0,
               lastHazardHit: 0, facing: id === 0 ? 1 : -1, respawning: false,
+              animationState: "idle", animationLockUntil: 0,
             };
           };
           this.pilots = [createPilot(0, "astra"), createPilot(1, "vanta")];
@@ -373,6 +407,8 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
             pilot.sprite.setVelocity(0, 0).setAlpha(1).setTint(0xffffff);
             pilot.sprite.setFlipX(id === 1);
             pilot.facing = id === 0 ? 1 : -1;
+            pilot.animationLockUntil = 0;
+            this.playPilotAnimation(pilot, "idle", 0, true);
           });
 
           const leftSpawns = [
@@ -515,11 +551,30 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
           return intent;
         }
 
+        private playPilotAnimation(pilot: Pilot, clip: PilotAnimationName, lockMs = 0, restart = false) {
+          const key = `${pilot.id === 0 ? "astra" : "vanta"}-${clip}`;
+          if (pilot.animationState === clip && !restart && pilot.sprite.anims.isPlaying) return;
+          pilot.animationState = clip;
+          pilot.animationLockUntil = lockMs > 0 ? this.time.now + lockMs : 0;
+          pilot.sprite.play(key, !restart);
+        }
+
+        private updatePilotAnimation(pilot: Pilot, shielding: boolean, time: number) {
+          if (time < pilot.animationLockUntil) return;
+          const body = pilot.sprite.body as ArcBody;
+          const grounded = body.blocked.down || body.touching.down;
+          if (shielding) this.playPilotAnimation(pilot, "shield");
+          else if (!grounded) this.playPilotAnimation(pilot, "jump");
+          else if (Math.abs(body.velocity.x) > 20) this.playPilotAnimation(pilot, "run");
+          else this.playPilotAnimation(pilot, "idle");
+        }
+
         private updatePilot(pilot: Pilot, controls: { move: number; jump: boolean; fire: boolean; shield: boolean; dash: boolean }, time: number, delta: number) {
           if (pilot.respawning || !pilot.sprite.active) return;
           const body = pilot.sprite.body as ArcBody;
           const shielding = controls.shield && pilot.shield > 0;
           const speed = shielding ? 125 : 265;
+          let dashed = false;
 
           if (controls.move !== 0) {
             pilot.sprite.setVelocityX(controls.move * speed);
@@ -528,13 +583,18 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
           } else {
             pilot.sprite.setVelocityX(0);
           }
-          if (controls.jump && (body.blocked.down || body.touching.down)) pilot.sprite.setVelocityY(-530);
+          if (controls.jump && (body.blocked.down || body.touching.down)) {
+            pilot.sprite.setVelocityY(-530);
+            this.playPilotAnimation(pilot, "jump", 120, true);
+          }
 
           if (controls.dash && time > pilot.nextDash && !shielding) {
             pilot.nextDash = time + 2600;
             pilot.invulnerableUntil = time + 260;
             pilot.sprite.setVelocityX(pilot.facing * 650);
             this.trailBurst(pilot.sprite.x, pilot.sprite.y, pilot.id);
+            this.playPilotAnimation(pilot, "dash", 260, true);
+            dashed = true;
           }
 
           if (shielding) {
@@ -545,7 +605,8 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
             pilot.shieldFx.setVisible(false);
           }
 
-          if (controls.fire && time > pilot.nextShot && !shielding) this.firePilotShot(pilot, time);
+          if (controls.fire && time > pilot.nextShot && !shielding && !dashed) this.firePilotShot(pilot, time);
+          this.updatePilotAnimation(pilot, shielding, time);
         }
 
         private firePilotShot(pilot: Pilot, time: number) {
@@ -556,6 +617,7 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
           shot.setVelocityX(pilot.facing * (560 + pilot.weapon * 25));
           shot.setData({ owner: pilot.id, damage: 13 + (pilot.level - 1) * 4 + pilot.weapon * 4, born: time, serial: this.shotSerial++ });
           this.shots.add(shot);
+          this.playPilotAnimation(pilot, "fire", overdrive ? 110 : 190, true);
         }
 
         private updateShots() {
@@ -684,14 +746,16 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
           this.time.delayedCall(100, () => pilot.sprite.active && pilot.sprite.clearTint());
           this.burst(pilot.sprite.x, pilot.sprite.y, shielding ? 0x68ebff : 0xff4d6e, shielding ? 5 : 9);
           if (pilot.hp <= 0) {
+            this.playPilotAnimation(pilot, "defeat", 1600, true);
             if (typeof source === "number") this.endRound(source);
             else this.resetDefeatedPilot(pilot, source);
-          }
+          } else if (!shielding) this.playPilotAnimation(pilot, "hit", 210, true);
         }
 
         private resetDefeatedPilot(pilot: Pilot, source: "minion" | "storm") {
           pilot.respawning = true;
-          pilot.sprite.disableBody(true, true);
+          pilot.sprite.setVelocity(0, 0);
+          (pilot.sprite.body as ArcBody).enable = false;
           pilot.shieldFx.setVisible(false);
           this.say(`${PILOTS[pilot.id].name} BREACHED BY ${source === "storm" ? "THE COLLAPSE" : "A MINION"} // RUN RESET`, 1800);
           this.time.delayedCall(1550, () => {
@@ -707,6 +771,7 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
             pilot.invulnerableUntil = this.time.now + 1600;
             pilot.respawning = false;
             pilot.sprite.enableBody(true, STARTS[pilot.id], 650, true, true).setAlpha(1);
+            this.playPilotAnimation(pilot, "idle", 0, true);
           });
         }
 
@@ -772,6 +837,7 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
           this.shots.clear(true, true);
           this.hostileShots.clear(true, true);
           this.pilots.forEach((p) => p.sprite.setVelocity(0, 0));
+          this.playPilotAnimation(this.pilots[winner], "idle", 0, true);
           this.say(`${PILOTS[winner].name} TAKES ROUND ${this.roundNumber}`, 2600);
           if (this.score[winner] >= 2) {
             this.matchWinner = winner;
@@ -805,7 +871,7 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
               x: pilot.sprite.x, y: pilot.sprite.y, vx: body.velocity.x, vy: body.velocity.y, flip: pilot.sprite.flipX,
               active: pilot.sprite.active, hp: pilot.hp, maxHp: pilot.maxHp, shield: pilot.shield, level: pilot.level,
               exp: pilot.exp, weapon: pilot.weapon, cloakUntil: pilot.cloakUntil, overdriveUntil: pilot.overdriveUntil,
-              facing: pilot.facing, respawning: pilot.respawning,
+              facing: pilot.facing, respawning: pilot.respawning, animation: pilot.animationState,
             };
           }) as [NetPilot, NetPilot];
           const minions = this.minions.getChildren().filter((child) => (child as ArcadeSprite).active).map((child) => {
@@ -842,6 +908,7 @@ function GameSurface({ config, session, onHud, onDisconnect }: GameSurfaceProps)
             pilot.overdriveUntil = data.overdriveUntil; pilot.facing = data.facing; pilot.respawning = data.respawning;
             pilot.sprite.setPosition(data.x, data.y).setFlipX(data.flip).setVisible(data.active);
             (pilot.sprite.body as ArcBody).setVelocity(data.vx, data.vy);
+            if (pilot.animationState !== data.animation) this.playPilotAnimation(pilot, data.animation, 0, true);
           });
 
           const minionMap = new Map<number, ArcadeSprite>();
@@ -1192,7 +1259,7 @@ function ModeSelect({ lobby, onSolo, onLearn, onCreate, onJoin }: {
         <Image className="mode-pilot vanta" src="/assets/characters/vanta.png" alt="" width={720} height={720} unoptimized priority />
       </div>
       <div className="mode-copy">
-        <span className="eyebrow">ONLINE COMBAT PROTOCOL // BUILD 01</span>
+        <span className="eyebrow">ONLINE COMBAT PROTOCOL // BUILD 02</span>
         <h1>RIFTBOUND<br /><em>ARENA</em></h1>
         <p>Enter from opposite ends of a hostile world. Build power. Claim the core. Break your rival twice.</p>
       </div>
@@ -1335,7 +1402,7 @@ export default function ArenaGame() {
       <header className="topbar">
         <a className="brand" href="#top" aria-label="Riftbound Arena home"><i>R</i><span>RIFTBOUND<small>ARENA</small></span></a>
         <div className="match-format"><span>{config?.mode === "online" ? `ROOM ${config.roomCode}` : "ONLINE PROTOCOL"}</span><b>BEST OF 3</b></div>
-        <div className="signal"><i /> SYSTEM ONLINE <span>v0.2</span></div>
+        <div className="signal"><i /> SYSTEM ONLINE <span>v0.3</span></div>
       </header>
 
       <section className="arena-shell" id="top">

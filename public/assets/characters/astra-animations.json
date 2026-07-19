@@ -1,0 +1,161 @@
+{
+  "character": "Astra",
+  "frameWidth": 256,
+  "frameHeight": 256,
+  "columns": 8,
+  "rows": 8,
+  "clips": {
+    "idle": {
+      "action": "Idle",
+      "start": 1,
+      "end": 48,
+      "fps": 8,
+      "loop": true,
+      "atlasStart": 0,
+      "atlasEnd": 7,
+      "samples": [
+        1,
+        7,
+        13,
+        19,
+        24,
+        30,
+        36,
+        42
+      ]
+    },
+    "run": {
+      "action": "Run",
+      "start": 1,
+      "end": 24,
+      "fps": 16,
+      "loop": true,
+      "atlasStart": 8,
+      "atlasEnd": 15,
+      "samples": [
+        1,
+        4,
+        7,
+        10,
+        12,
+        15,
+        18,
+        21
+      ]
+    },
+    "jump": {
+      "action": "Jump",
+      "start": 1,
+      "end": 30,
+      "fps": 14,
+      "loop": false,
+      "atlasStart": 16,
+      "atlasEnd": 23,
+      "samples": [
+        1,
+        5,
+        9,
+        13,
+        18,
+        22,
+        26,
+        30
+      ]
+    },
+    "fire": {
+      "action": "Fire",
+      "start": 1,
+      "end": 14,
+      "fps": 18,
+      "loop": false,
+      "atlasStart": 24,
+      "atlasEnd": 31,
+      "samples": [
+        1,
+        3,
+        5,
+        7,
+        8,
+        10,
+        12,
+        14
+      ]
+    },
+    "shield": {
+      "action": "Shield",
+      "start": 1,
+      "end": 24,
+      "fps": 12,
+      "loop": true,
+      "atlasStart": 32,
+      "atlasEnd": 39,
+      "samples": [
+        1,
+        4,
+        7,
+        10,
+        12,
+        15,
+        18,
+        21
+      ]
+    },
+    "dash": {
+      "action": "Dash",
+      "start": 1,
+      "end": 16,
+      "fps": 20,
+      "loop": false,
+      "atlasStart": 40,
+      "atlasEnd": 47,
+      "samples": [
+        1,
+        3,
+        5,
+        7,
+        10,
+        12,
+        14,
+        16
+      ]
+    },
+    "hit": {
+      "action": "Hit",
+      "start": 1,
+      "end": 12,
+      "fps": 18,
+      "loop": false,
+      "atlasStart": 48,
+      "atlasEnd": 55,
+      "samples": [
+        1,
+        3,
+        4,
+        6,
+        7,
+        9,
+        10,
+        12
+      ]
+    },
+    "defeat": {
+      "action": "Defeat",
+      "start": 1,
+      "end": 40,
+      "fps": 12,
+      "loop": false,
+      "atlasStart": 56,
+      "atlasEnd": 63,
+      "samples": [
+        1,
+        7,
+        12,
+        18,
+        23,
+        29,
+        34,
+        40
+      ]
+    }
+  }
+}

@@ -3,9 +3,10 @@
 Design reference: public/og.png
 
 Outputs for each pilot:
-  - an editable Blender scene
-  - a game-ready GLB model
+  - an editable, rigid-body-rigged Blender scene
+  - a game-ready GLB model with named animation clips
   - a transparent 1024px action-pose render
+  - an 8x8 transparent animation sprite sheet and JSON manifest
 
 Run with:
   blender --background --python tools/blender/create_characters.py -- public/assets/characters
@@ -14,11 +15,29 @@ Run with:
 from __future__ import annotations
 
 import math
+import json
 import os
+import shutil
 import sys
+import tempfile
+from array import array
 
 import bpy
 from mathutils import Vector
+
+
+ANIMATION_SPECS = (
+    ("Idle", 1, 48, 8, True),
+    ("Run", 1, 24, 16, True),
+    ("Jump", 1, 30, 14, False),
+    ("Fire", 1, 14, 18, False),
+    ("Shield", 1, 24, 12, True),
+    ("Dash", 1, 16, 20, False),
+    ("Hit", 1, 12, 18, False),
+    ("Defeat", 1, 40, 12, False),
+)
+ATLAS_FRAME_SIZE = 256
+ATLAS_COLUMNS = 8
 
 
 def make_material(name, color, metallic=0.55, roughness=0.22, emission=None, emission_strength=0.0, alpha=1.0):
@@ -109,6 +128,8 @@ def look_at(obj, target):
 def clear_scene():
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete(use_global=False)
+    for action in list(bpy.data.actions):
+        bpy.data.actions.remove(action)
     for datablocks in (
         bpy.data.materials,
         bpy.data.curves,
@@ -244,6 +265,319 @@ def build_pilot(callsign, accent_rgb, variant):
     return root
 
 
+def create_bone(edit_bones, name, head, tail, parent=None):
+    bone = edit_bones.new(name)
+    bone.head = head
+    bone.tail = tail
+    bone.parent = parent
+    bone.use_connect = False
+    return bone
+
+
+def rigid_parent_to_bone(obj, armature, bone_name):
+    world = obj.matrix_world.copy()
+    obj.parent = armature
+    obj.parent_type = "BONE"
+    obj.parent_bone = bone_name
+    obj.matrix_world = world
+
+
+def create_pilot_rig(root, callsign):
+    """Create a rigid-body armature suited to a segmented combat robot."""
+    meshes = [obj for obj in root.children if obj.type == "MESH"]
+    rig_data = bpy.data.armatures.new(f"{callsign}_PilotRig")
+    rig = bpy.data.objects.new(f"{callsign}_PilotRig", rig_data)
+    bpy.context.collection.objects.link(rig)
+    rig.parent = root
+    rig.show_in_front = True
+    rig["rig_type"] = "rigid segmented pilot"
+    rig["facing_axis"] = "+X"
+
+    bpy.context.view_layer.objects.active = rig
+    rig.select_set(True)
+    bpy.ops.object.mode_set(mode="EDIT")
+    bones = rig_data.edit_bones
+    master = create_bone(bones, "master", (0, 0, 0.18), (0, 0, 0.78))
+    pelvis = create_bone(bones, "pelvis", (0, 0, 1.66), (0, 0, 2.10), master)
+    spine = create_bone(bones, "spine", (0, 0, 2.02), (0.02, 0, 3.40), pelvis)
+    create_bone(bones, "head", (0.02, 0, 3.34), (0.02, 0, 4.28), spine)
+
+    cannon_upper = create_bone(bones, "cannon_upper", (0.64, 0, 3.02), (1.08, -0.01, 2.68), spine)
+    create_bone(bones, "cannon_forearm", (1.08, -0.01, 2.68), (2.26, -0.01, 2.60), cannon_upper)
+    shield_upper = create_bone(bones, "shield_upper", (-0.61, 0.07, 3.00), (-1.00, 0.07, 2.56), spine)
+    create_bone(bones, "shield_forearm", (-1.00, 0.07, 2.56), (-1.25, -0.20, 2.22), shield_upper)
+
+    front_thigh = create_bone(bones, "front_thigh", (0.31, -0.03, 1.80), (0.84, -0.08, 1.27), pelvis)
+    front_shin = create_bone(bones, "front_shin", (0.84, -0.08, 1.27), (1.18, -0.12, 0.69), front_thigh)
+    create_bone(bones, "front_foot", (1.18, -0.12, 0.69), (1.72, -0.14, 0.45), front_shin)
+    rear_thigh = create_bone(bones, "rear_thigh", (-0.30, 0.14, 1.80), (-0.72, 0.17, 1.09), pelvis)
+    rear_shin = create_bone(bones, "rear_shin", (-0.72, 0.17, 1.09), (-1.25, 0.18, 0.51), rear_thigh)
+    create_bone(bones, "rear_foot", (-1.25, 0.18, 0.51), (-1.72, 0.16, 0.40), rear_shin)
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+    def bone_for_object(name):
+        if name.startswith(("Helmet_", "Faceplate", "Visor_")):
+            return "head"
+        if name.startswith("Blaster_"):
+            return "cannon_forearm"
+        if name.startswith(("Cannon_Shoulder", "Cannon_Upper", "Cannon_Bicep")):
+            return "cannon_upper"
+        if name.startswith(("Shield_Forearm", "Shield_Emitter", "Shield_Field", "Shield_Hub", "Shield_Spoke")):
+            return "shield_forearm"
+        if name.startswith(("Shield_Shoulder", "Shield_Upper", "Shield_Bicep")):
+            return "shield_upper"
+        if name.startswith(("Front_Boot", "Front_Boot_Toe")):
+            return "front_foot"
+        if name.startswith(("Front_Knee", "Front_Shin")):
+            return "front_shin"
+        if name.startswith(("Hip_Front", "Front_Thigh")):
+            return "front_thigh"
+        if name.startswith(("Rear_Boot", "Rear_Heel")):
+            return "rear_foot"
+        if name.startswith(("Rear_Knee", "Rear_Shin")):
+            return "rear_shin"
+        if name.startswith(("Hip_Rear", "Rear_Thigh")):
+            return "rear_thigh"
+        if name.startswith("Pelvis_"):
+            return "pelvis"
+        return "spine"
+
+    for obj in meshes:
+        rigid_parent_to_bone(obj, rig, bone_for_object(obj.name))
+    return rig
+
+
+def rz(degrees):
+    return (0.0, 0.0, math.radians(degrees))
+
+
+def key_pose(rig, frame, rotations=None, locations=None, scales=None):
+    rotations = rotations or {}
+    locations = locations or {}
+    scales = scales or {}
+    for bone in rig.pose.bones:
+        bone.rotation_mode = "XYZ"
+        bone.rotation_euler = rotations.get(bone.name, (0.0, 0.0, 0.0))
+        bone.location = locations.get(bone.name, (0.0, 0.0, 0.0))
+        bone.scale = scales.get(bone.name, (1.0, 1.0, 1.0))
+        bone.keyframe_insert(data_path="rotation_euler", frame=frame, group=bone.name)
+        bone.keyframe_insert(data_path="location", frame=frame, group=bone.name)
+        bone.keyframe_insert(data_path="scale", frame=frame, group=bone.name)
+
+
+def make_action(rig, name, end_frame, fps, loop, poses, interpolation="BEZIER"):
+    action = bpy.data.actions.new(name=name)
+    action.use_fake_user = True
+    action["clip_name"] = name
+    action["fps"] = fps
+    action["loop"] = loop
+    action["gameplay_ready"] = True
+    rig.animation_data.action = action
+    previous_interpolation = bpy.context.preferences.edit.keyframe_new_interpolation_type
+    bpy.context.preferences.edit.keyframe_new_interpolation_type = interpolation
+    for frame, rotations, locations, scales in poses:
+        key_pose(rig, frame, rotations, locations, scales)
+    bpy.context.preferences.edit.keyframe_new_interpolation_type = previous_interpolation
+    action.frame_start = 1
+    action.frame_end = end_frame
+    return action
+
+
+def create_pilot_animations(rig, root):
+    rig.animation_data_create()
+    actions = {}
+
+    idle_base = {
+        "master": rz(1), "spine": rz(-1), "front_thigh": rz(28), "front_shin": rz(-10),
+        "front_foot": rz(-5), "rear_thigh": rz(-24), "rear_shin": rz(11), "rear_foot": rz(4),
+        "cannon_upper": rz(-3), "shield_upper": rz(4),
+    }
+    idle_breathe = {**idle_base, "master": rz(0), "spine": rz(1), "head": rz(-2), "cannon_upper": rz(-1), "shield_upper": rz(2)}
+    actions["Idle"] = make_action(rig, "Idle", 48, 8, True, [
+        (1, idle_base, {}, {}),
+        (13, idle_breathe, {"master": (0, 0, 0.035)}, {}),
+        (25, idle_base, {}, {}),
+        (37, {**idle_breathe, "head": rz(2)}, {"master": (0, 0, 0.02)}, {}),
+        (48, idle_base, {}, {}),
+    ])
+
+    run_contact = {
+        "master": rz(8), "spine": rz(-4), "head": rz(-2), "cannon_upper": rz(-4), "shield_upper": rz(7),
+        "front_thigh": rz(0), "front_shin": rz(0), "front_foot": rz(0),
+        "rear_thigh": rz(0), "rear_shin": rz(0), "rear_foot": rz(0),
+    }
+    run_pass = {
+        "master": rz(10), "spine": rz(-5), "front_thigh": rz(25), "front_shin": rz(-22),
+        "front_foot": rz(-8), "rear_thigh": rz(-20), "rear_shin": rz(22), "rear_foot": rz(8),
+        "cannon_upper": rz(4), "shield_upper": rz(-5),
+    }
+    run_reverse = {
+        "master": rz(8), "spine": rz(-4), "head": rz(2), "front_thigh": rz(58), "front_shin": rz(-38),
+        "front_foot": rz(-12), "rear_thigh": rz(-48), "rear_shin": rz(34), "rear_foot": rz(12),
+        "cannon_upper": rz(12), "shield_upper": rz(-12),
+    }
+    actions["Run"] = make_action(rig, "Run", 24, 16, True, [
+        (1, run_contact, {}, {}),
+        (7, run_pass, {"master": (0, 0, 0.055)}, {}),
+        (13, run_reverse, {}, {}),
+        (19, {**run_pass, "cannon_upper": rz(-8), "shield_upper": rz(10)}, {"master": (0, 0, 0.055)}, {}),
+        (24, run_contact, {}, {}),
+    ], "LINEAR")
+
+    actions["Jump"] = make_action(rig, "Jump", 30, 14, False, [
+        (1, {**idle_base, "master": rz(8), "front_thigh": rz(38), "rear_thigh": rz(-34)}, {"master": (0, 0, -0.12)}, {}),
+        (7, {"master": rz(10), "spine": rz(-4), "front_thigh": rz(65), "front_shin": rz(-52), "rear_thigh": rz(-62), "rear_shin": rz(48), "front_foot": rz(-12), "rear_foot": rz(12)}, {"master": (0.05, 0, 0.16)}, {}),
+        (15, {"master": rz(6), "spine": rz(-3), "head": rz(-2), "front_thigh": rz(54), "front_shin": rz(-46), "rear_thigh": rz(-50), "rear_shin": rz(42)}, {"master": (0.08, 0, 0.28)}, {}),
+        (23, {"master": rz(4), "front_thigh": rz(32), "front_shin": rz(-20), "rear_thigh": rz(-30), "rear_shin": rz(22)}, {"master": (0.04, 0, 0.08)}, {}),
+        (30, idle_base, {}, {}),
+    ])
+
+    actions["Fire"] = make_action(rig, "Fire", 14, 18, False, [
+        (1, idle_base, {}, {}),
+        (3, {**idle_base, "master": rz(-3), "spine": rz(3), "cannon_upper": rz(-12), "cannon_forearm": rz(-8), "head": rz(3)}, {"master": (-0.055, 0, 0)}, {}),
+        (6, {**idle_base, "cannon_upper": rz(-7), "cannon_forearm": rz(-4)}, {"master": (-0.025, 0, 0)}, {}),
+        (14, idle_base, {}, {}),
+    ], "LINEAR")
+
+    shield_guard = {
+        **idle_base, "master": rz(-5), "spine": rz(5), "head": rz(3),
+        "shield_upper": rz(-64), "shield_forearm": rz(-38), "cannon_upper": rz(9),
+        "front_thigh": rz(34), "rear_thigh": rz(-30),
+    }
+    actions["Shield"] = make_action(rig, "Shield", 24, 12, True, [
+        (1, shield_guard, {"master": (-0.04, 0, -0.02)}, {}),
+        (7, {**shield_guard, "shield_forearm": rz(-42)}, {"master": (-0.055, 0, -0.01)}, {"shield_forearm": (1.03, 1.03, 1.03)}),
+        (13, shield_guard, {"master": (-0.04, 0, -0.02)}, {}),
+        (19, {**shield_guard, "shield_forearm": rz(-34)}, {"master": (-0.025, 0, -0.01)}, {"shield_forearm": (0.98, 0.98, 0.98)}),
+        (24, shield_guard, {"master": (-0.04, 0, -0.02)}, {}),
+    ])
+
+    actions["Dash"] = make_action(rig, "Dash", 16, 20, False, [
+        (1, run_contact, {}, {}),
+        (3, {"master": rz(24), "spine": rz(-9), "head": rz(-6), "cannon_upper": rz(-10), "shield_upper": rz(16), "front_thigh": rz(30), "front_shin": rz(-34), "rear_thigh": rz(-24), "rear_shin": rz(28)}, {"master": (0.18, 0, -0.03)}, {}),
+        (9, {"master": rz(27), "spine": rz(-11), "head": rz(-7), "cannon_upper": rz(-14), "shield_upper": rz(20), "front_thigh": rz(36), "front_shin": rz(-38), "rear_thigh": rz(-30), "rear_shin": rz(32)}, {"master": (0.28, 0, 0.02)}, {}),
+        (13, {**run_contact, "master": rz(16)}, {"master": (0.12, 0, 0)}, {}),
+        (16, run_contact, {}, {}),
+    ], "LINEAR")
+
+    actions["Hit"] = make_action(rig, "Hit", 12, 18, False, [
+        (1, idle_base, {}, {}),
+        (3, {**idle_base, "master": rz(-18), "spine": rz(10), "head": rz(10), "cannon_upper": rz(16), "shield_upper": rz(20), "front_thigh": rz(18), "rear_thigh": rz(-14)}, {"master": (-0.18, 0, 0.04)}, {}),
+        (7, {**idle_base, "master": rz(7), "spine": rz(-5), "head": rz(-4)}, {"master": (0.05, 0, 0)}, {}),
+        (12, idle_base, {}, {}),
+    ], "LINEAR")
+
+    actions["Defeat"] = make_action(rig, "Defeat", 40, 12, False, [
+        (1, idle_base, {}, {}),
+        (8, {**idle_base, "master": rz(-24), "spine": rz(13), "head": rz(12), "cannon_upper": rz(26), "shield_upper": rz(32), "front_thigh": rz(10), "rear_thigh": rz(-8)}, {"master": (-0.16, 0, -0.08)}, {}),
+        (20, {"master": rz(-62), "spine": rz(18), "head": rz(18), "cannon_upper": rz(48), "cannon_forearm": rz(24), "shield_upper": rz(55), "shield_forearm": rz(24), "front_thigh": rz(42), "front_shin": rz(-28), "rear_thigh": rz(-18), "rear_shin": rz(32)}, {"master": (-0.42, 0, -0.62)}, {}),
+        (31, {"master": rz(-84), "spine": rz(12), "head": rz(22), "cannon_upper": rz(62), "cannon_forearm": rz(30), "shield_upper": rz(72), "shield_forearm": rz(36), "front_thigh": rz(54), "front_shin": rz(-34), "rear_thigh": rz(-8), "rear_shin": rz(42)}, {"master": (-0.55, 0, -1.17)}, {}),
+        (40, {"master": rz(-88), "spine": rz(9), "head": rz(25), "cannon_upper": rz(66), "cannon_forearm": rz(34), "shield_upper": rz(76), "shield_forearm": rz(40), "front_thigh": rz(58), "front_shin": rz(-36), "rear_thigh": rz(-5), "rear_shin": rz(45)}, {"master": (-0.58, 0, -1.24)}, {}),
+    ])
+
+    clip_metadata = {
+        name.lower(): {"action": name, "start": start, "end": end, "fps": fps, "loop": loop}
+        for name, start, end, fps, loop in ANIMATION_SPECS
+    }
+    root["animation_clips"] = json.dumps(clip_metadata, separators=(",", ":"))
+    rig["animation_clips"] = root["animation_clips"]
+    rig.animation_data.action = actions["Idle"]
+    bpy.context.scene.frame_set(1)
+    return actions, clip_metadata
+
+
+def sampled_frames(start, end, loop):
+    if loop:
+        span = end - start
+        return [round(start + span * i / ATLAS_COLUMNS) for i in range(ATLAS_COLUMNS)]
+    return [round(start + (end - start) * i / (ATLAS_COLUMNS - 1)) for i in range(ATLAS_COLUMNS)]
+
+
+def render_animation_atlas(output_dir, callsign, rig, actions, clip_metadata):
+    scene = bpy.context.scene
+    old_x, old_y = scene.render.resolution_x, scene.render.resolution_y
+    scene.render.resolution_x = ATLAS_FRAME_SIZE
+    scene.render.resolution_y = ATLAS_FRAME_SIZE
+    scene.render.resolution_percentage = 100
+    sheet_width = ATLAS_FRAME_SIZE * ATLAS_COLUMNS
+    sheet_height = ATLAS_FRAME_SIZE * len(ANIMATION_SPECS)
+    sheet_pixels = array("f", [0.0]) * (sheet_width * sheet_height * 4)
+    original_filepath = scene.render.filepath
+    temporary_frames = tempfile.mkdtemp(prefix=f"riftbound-{callsign.lower()}-")
+
+    manifest_clips = {}
+    try:
+        for row, (name, start, end, fps, loop) in enumerate(ANIMATION_SPECS):
+            rig.animation_data.action = actions[name]
+            frames = sampled_frames(start, end, loop)
+            # Force Blender's layered action system to evaluate a newly assigned
+            # clip even when its first sample matches the current scene frame.
+            scene.frame_set(min(end, start + 1))
+            scene.frame_set(start)
+            bpy.context.view_layer.update()
+            for column, frame in enumerate(frames):
+                scene.frame_set(frame)
+                bpy.context.view_layer.update()
+                frame_path = os.path.join(temporary_frames, f"{row:02d}-{column:02d}.png")
+                scene.render.filepath = frame_path
+                bpy.ops.render.render(write_still=True)
+                frame_image = bpy.data.images.load(frame_path, check_existing=False)
+                frame_pixels = array("f", frame_image.pixels[:])
+                expected_pixels = ATLAS_FRAME_SIZE * ATLAS_FRAME_SIZE * 4
+                if len(frame_pixels) != expected_pixels:
+                    raise RuntimeError(
+                        f"Unexpected atlas frame size for {name} frame {frame}: "
+                        f"{tuple(frame_image.size)} / {len(frame_pixels)} pixels"
+                    )
+                for source_y in range(ATLAS_FRAME_SIZE):
+                    source_start = source_y * ATLAS_FRAME_SIZE * 4
+                    source_end = source_start + ATLAS_FRAME_SIZE * 4
+                    # Blender image pixels begin at the bottom-left, while Phaser
+                    # numbers sprite-sheet frames from the top-left.
+                    target_y = (len(ANIMATION_SPECS) - 1 - row) * ATLAS_FRAME_SIZE + source_y
+                    target_start = (target_y * sheet_width + column * ATLAS_FRAME_SIZE) * 4
+                    sheet_pixels[target_start : target_start + ATLAS_FRAME_SIZE * 4] = frame_pixels[source_start:source_end]
+                bpy.data.images.remove(frame_image)
+            manifest_clips[name.lower()] = {
+                **clip_metadata[name.lower()],
+                "atlasStart": row * ATLAS_COLUMNS,
+                "atlasEnd": row * ATLAS_COLUMNS + ATLAS_COLUMNS - 1,
+                "samples": frames,
+            }
+    finally:
+        scene.render.filepath = original_filepath
+        shutil.rmtree(temporary_frames, ignore_errors=True)
+
+    image_name = f"{callsign}_AnimationAtlas"
+    existing = bpy.data.images.get(image_name)
+    if existing:
+        bpy.data.images.remove(existing)
+    sheet = bpy.data.images.new(image_name, width=sheet_width, height=sheet_height, alpha=True, float_buffer=False)
+    sheet.pixels.foreach_set(sheet_pixels)
+    atlas_path = os.path.join(output_dir, f"{callsign.lower()}-spritesheet.png")
+    sheet.filepath_raw = atlas_path
+    sheet.file_format = "PNG"
+    sheet.save()
+
+    manifest = {
+        "character": callsign,
+        "frameWidth": ATLAS_FRAME_SIZE,
+        "frameHeight": ATLAS_FRAME_SIZE,
+        "columns": ATLAS_COLUMNS,
+        "rows": len(ANIMATION_SPECS),
+        "clips": manifest_clips,
+    }
+    with open(os.path.join(output_dir, f"{callsign.lower()}-animations.json"), "w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2)
+        handle.write("\n")
+
+    rig.animation_data.action = actions["Idle"]
+    scene.frame_set(1)
+    scene.render.resolution_x = old_x
+    scene.render.resolution_y = old_y
+    return atlas_path
+
+
 def setup_render(accent_rgb):
     scene = bpy.context.scene
     scene.render.engine = "BLENDER_EEVEE"
@@ -303,13 +637,21 @@ def render_character(output_dir, callsign, color, variant):
     clear_scene()
     setup_render(color)
     root = build_pilot(callsign, color, variant)
+    rig = create_pilot_rig(root, callsign)
+    actions, clip_metadata = create_pilot_animations(rig, root)
 
     png_path = os.path.join(output_dir, f"{callsign.lower()}.png")
     blend_path = os.path.join(output_dir, f"{callsign.lower()}.blend")
     glb_path = os.path.join(output_dir, f"{callsign.lower()}.glb")
+    rig.animation_data.action = actions["Run"]
+    bpy.context.scene.frame_set(1)
     bpy.context.scene.render.filepath = png_path
-    bpy.ops.wm.save_as_mainfile(filepath=blend_path)
     bpy.ops.render.render(write_still=True)
+    render_animation_atlas(output_dir, callsign, rig, actions, clip_metadata)
+
+    rig.animation_data.action = actions["Idle"]
+    bpy.context.scene.frame_set(1)
+    bpy.ops.wm.save_as_mainfile(filepath=blend_path)
 
     bpy.ops.object.select_all(action="DESELECT")
     root.select_set(True)
@@ -322,7 +664,13 @@ def render_character(output_dir, callsign, color, variant):
         use_selection=True,
         export_apply=True,
         export_yup=True,
+        export_animations=True,
+        export_animation_mode="ACTIONS",
+        export_force_sampling=True,
+        export_reset_pose_bones=True,
+        export_anim_slide_to_zero=True,
     )
+    print(f"{callsign}: exported {', '.join(actions)} plus animation atlas")
 
 
 def main():
@@ -331,7 +679,7 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     render_character(output_dir, "Astra", (0.00, 0.76, 1.00), "astra")
     render_character(output_dir, "Vanta", (1.00, 0.03, 0.48), "vanta")
-    print(f"Rendered hero-art-inspired Riftbound pilots to {output_dir}")
+    print(f"Rendered animated hero-art-inspired Riftbound pilots to {output_dir}")
 
 
 if __name__ == "__main__":

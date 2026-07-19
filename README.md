@@ -60,12 +60,20 @@ The relay is intentionally lightweight for the vertical slice. A production comp
 
 ## Blender characters
 
-Editable sources, game-ready GLB exports, and 1024px transparent renders live in `public/assets/characters/`. The procedural Blender models use the social hero art as their design reference: layered ceramic armor, dark mechanical joints, luminous panel seams, circular shield emitters, and oversized arm blasters.
+Editable sources, game-ready GLB exports, 1024px transparent renders, animation manifests, and 64-frame sprite atlases live in `public/assets/characters/`. The procedural Blender models use the social hero art as their design reference: layered ceramic armor, dark mechanical joints, luminous panel seams, circular shield emitters, and oversized arm blasters.
+
+Both pilots use a rigid segmented armature and ship with eight named gameplay clips: `Idle`, `Run`, `Jump`, `Fire`, `Shield`, `Dash`, `Hit`, and `Defeat`. The GLB retains the full clips for a future 3D renderer, while the current Phaser game plays the Blender-rendered sprite atlas and synchronizes animation state during online matches.
 
 Regenerate both pilots with Blender 5.x:
 
 ```powershell
 & "C:\Program Files\Blender Foundation\Blender 5.1\blender.exe" --background --python tools\blender\create_characters.py -- public\assets\characters
+```
+
+Verify the exported rigs, clips, manifests, and atlases:
+
+```powershell
+& "C:\Program Files\Blender Foundation\Blender 5.1\blender.exe" --background --python tools\blender\verify_character_animations.py -- public\assets\characters
 ```
 
 ## Checks
